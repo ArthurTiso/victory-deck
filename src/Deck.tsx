@@ -1,5 +1,13 @@
-import React, { ReactNode, useCallback, useEffect, useState } from "react";
-import { Platform, Pressable, StyleSheet, Text, View } from "react-native";
+import React, { ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import {
+  FlatList,
+  Platform,
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+  useWindowDimensions,
+} from "react-native";
 import { colors, layout, space, type } from "../theme/tokens";
 
 export type Slide = {
@@ -10,52 +18,44 @@ export type Slide = {
   section?: string;
   render: () => ReactNode;
   /**
-   * Mantido por compatibilidade e não é mais necessário: o deck não usa
-   * rolagem, então gesto de gráfico nunca disputa com navegação de slide.
+   * true nos slides com gráfico interativo (toque, pan, zoom).
+   * Desliga o arraste do deck para que o gesto pertença ao gráfico —
+   * sem isso, arrastar sobre o gráfico troca de slide.
    */
   locksGestures?: boolean;
 };
 
-/**
- * Deck sem rolagem.
- *
- * Todos os slides ficam montados e empilhados em posição absoluta; só o
- * ativo tem `display: flex`. Duas consequências importantes:
- *
- * 1. Nenhum gráfico remonta ao navegar — sem salto visual ao voltar.
- * 2. Não há ScrollView, então gestos de gráfico (arraste, pinça) não
- *    competem com a troca de slide. A versão anterior alternava
- *    `scrollEnabled`, e no navegador isso cancelava a rolagem
- *    programática, travando a navegação nos slides interativos.
- *
- * Navegação: teclado no navegador, botões do rodapé, e os marcadores de
- * progresso como atalho direto.
- */
 export function Deck({ slides }: { slides: Slide[] }) {
+  const { width } = useWindowDimensions();
+  const listRef = useRef<FlatList>(null);
   const [index, setIndex] = useState(0);
 
   const goTo = useCallback(
     (next: number) => {
-      setIndex(Math.max(0, Math.min(slides.length - 1, next)));
+      const clamped = Math.max(0, Math.min(slides.length - 1, next));
+      listRef.current?.scrollToOffset({ offset: clamped * width, animated: true });
+      setIndex(clamped);
     },
-    [slides.length],
+    [slides.length, width],
   );
 
+  /**
+   * Navegação por teclado no navegador. Além das setas, cobre PageUp e
+   * PageDown — que é o que a maioria dos apresentadores remotos envia.
+   */
   useEffect(() => {
     if (Platform.OS !== "web" || typeof window === "undefined") return;
 
     const onKey = (e: KeyboardEvent) => {
-      if (["ArrowRight", "ArrowDown", "PageDown", " ", "Enter"].includes(e.key)) {
+      if (["ArrowRight", "PageDown", " "].includes(e.key)) {
         e.preventDefault();
         goTo(index + 1);
-      } else if (["ArrowLeft", "ArrowUp", "PageUp", "Backspace"].includes(e.key)) {
+      } else if (["ArrowLeft", "PageUp"].includes(e.key)) {
         e.preventDefault();
         goTo(index - 1);
       } else if (e.key === "Home") {
-        e.preventDefault();
         goTo(0);
       } else if (e.key === "End") {
-        e.preventDefault();
         goTo(slides.length - 1);
       }
     };
@@ -79,17 +79,26 @@ export function Deck({ slides }: { slides: Slide[] }) {
         </View>
       </View>
 
-      <View style={styles.palco}>
-        {slides.map((s, i) => (
-          <View
-            key={s.id}
-            style={[styles.slide, { display: i === index ? "flex" : "none" }]}
-            pointerEvents={i === index ? "auto" : "none"}
-          >
-            {s.render()}
-          </View>
-        ))}
-      </View>
+      <FlatList
+        ref={listRef}
+        data={slides}
+        keyExtractor={(s) => s.id}
+        horizontal
+        pagingEnabled
+        showsHorizontalScrollIndicator={false}
+        scrollEnabled={!current?.locksGestures}
+        onMomentumScrollEnd={(e) =>
+          setIndex(Math.round(e.nativeEvent.contentOffset.x / width))
+        }
+        renderItem={({ item }) => <View style={{ width }}>{item.render()}</View>}
+        getItemLayout={(_, i) => ({ length: width, offset: width * i, index: i })}
+        // Mantém todos os slides montados: evita o gráfico remontar e
+        // "pular" quando você volta a um slide durante a apresentação.
+        initialNumToRender={slides.length}
+        maxToRenderPerBatch={slides.length}
+        windowSize={slides.length * 2 + 1}
+        removeClippedSubviews={false}
+      />
 
       <View style={styles.footer}>
         <NavButton label="Anterior" onPress={() => goTo(index - 1)} disabled={index === 0} />
@@ -146,13 +155,14 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
   },
-  section: { ...type.label, color: colors.textFaint, letterSpacing: 0.5 },
-  progress: { flexDirection: "row", gap: 6, alignItems: "center" },
-  pip: { width: 16, height: 3, borderRadius: 2, backgroundColor: colors.border },
+  section: {
+    ...type.label,
+    color: colors.textFaint,
+    letterSpacing: 0.5,
+  },
+  progress: { flexDirection: "row", gap: space.sm, alignItems: "center" },
+  pip: { width: 20, height: 3, borderRadius: 2, backgroundColor: colors.border },
   pipActive: { backgroundColor: colors.accent },
-
-  palco: { flex: 1 },
-  slide: { ...StyleSheet.absoluteFillObject },
 
   footer: {
     height: layout.footerHeight,
